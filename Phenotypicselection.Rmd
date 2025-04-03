@@ -1,0 +1,305 @@
+---
+title: "Using HMSC models to study phenotypic selection in coflowering communities:
+  Individual-level fitness data"
+author: '"Yedra Garcia"'
+date: "2025-02-02"
+output: pdf_document
+---
+
+Load the packages 
+
+```{r setup, include=FALSE}
+library(Hmsc)
+library(corrplot)
+library(knitr)
+```
+
+Contact: Yedra Garcia (yedra.garcia_garcia@biol.lu.se, yedragg@gmail.com)
+
+## Introduction
+
+Here, we are going to fit a statistical model within the HMSC framework on individual fitness data (fruits produced) of 3 food-deceptive (i.e. do not provide nectar rewards) orchid species co-occurring in a set of plots (1m radius) on Oland (Sweden) recorded by Garcia et al. (in prep.). 
+
+We will fit the HMSC model to 1) estimate phenotypic linear selection gradients on two traits (number of flowers and plant height) for each orchid species using the multiple regression approach by Lande and Arnold (1983) and 2) quantify fitness residual correlations between co-occurring species, which may suggest pollinator-mediated reproductive interactions
+
+## Model setup and MCMC sampling
+
+### Read data files
+
+fitdata: contains information on individual fitness (here fruits produced) of three species co-occurring on the same plots. In some plots there is more than one individual per species.
+
+traitdata: contains information on phenotypic traits (here plant height and number of flowers) from individuals of each focal species at each plot. Each row corresponds to one individual
+
+studyDesign: contains information on the hierarchical structure of the data, in this case on the plots where the
+individual data were collected, and allow us to model random level effects
+
+```{r, message=F, warning=F, cache=T}
+rm(list=ls())
+fitdata= read.csv("individual_level/model_selection/fitdata.csv")
+traitdata = read.csv("individual_level/model_selection/traitdata.csv")
+studyDesign = read.csv("individual_level/model_selection/studydesign.csv")
+studyDesign$plot = as.factor(studyDesign$plot)
+
+tail(fitdata)
+head(traitdata)
+```
+
+We first define the XData object that only includes information on the phenotypic traits
+
+HMSC does not currently allow missing values in the XData object, so we must exclude individuals with missing values (here they were already excluded from the data files).
+
+```{r, message=F, warning=F, cache=T}
+XData= traitdata[, c(2,3)]
+head(XData)
+```
+
+We then need to define the Y object that contains information on individual fitness for each species.
+Hence, we remove the column with "plot" information from the fitdata file
+
+```{r, message=F, warning=F, cache=T}
+
+Y= fitdata[, -1]
+
+head(Y)
+```
+
+##Estimate relative fitness
+
+To be able to estimate phenotypic selection, we need to quantify the relative fitness of the individuals.
+To do that, we divide the individual fitness (number of fruits produced) by the mean fitness for each focal species.
+
+```{r, message=F, warning=F, cache=T}
+#Relative fitness (fruits per plant/mean fruits for each species)
+Y = apply(Y, 2, function(x) x/mean(x, na.rm=T))
+
+```
+#### Set model formula for covariates: phenotypic traits
+
+To estimate phenotypic selection gradients on the traits, we will follow the multiple regression approach by Lande and Arnold (1983). Thus, we need to set the phenotypic traits as model predictors.
+
+To do that in HMSC we define the model formula for the predictor part: 
+
+```{r}
+XFormula = ~ plant_height+ flowers_open
+```
+
+### Define HMSC random levels
+
+Defining the random level component in the HMSC model: here the study plots
+
+```{r, message=F, warning=F}
+rL1 = HmscRandomLevel(units = unique(studyDesign[,1]))
+```
+
+#Set up the Hmsc model
+
+We assume a normal distribution to model the effects of phenotypic traits on relative fitness
+```{r, message=F, warning=F}
+#Set up the Hmsc model
+
+m = Hmsc(Y=as.matrix(Y), XData = XData,  XFormula = XFormula,
+         dist = "normal", studyDesign = studyDesign, ranLevels = list(plot=rL1))
+```
+
+### Run MCMC and save the model object
+
+HMSC models are fitted with Bayesian inference.
+This means that to estimate the model parameters, we need to sample the posterior distribution
+with MCMC (Markov Chain Monte Carlo) methods.
+
+In HMSC we do that by using the sampleMcmc function.
+First, before calling the function we need to define a series of parameters:
+
+samples: number of samples we want to obtain. (1000 samples)
+nChains: number of independent MCMC chains . 2 chains (1000 samples per chain)
+thin: thinning interval for which we record the samples
+transient: length of the transient or burn in (iterations that we do not store)
+
+```{r}
+samples = 1000
+nChains = 2
+thin = 5
+adaptNf = ceiling(0.4*samples*thin) 
+transient = ceiling(0.5*samples*thin)
+
+a = Sys.time()
+m = sampleMcmc(m, samples = samples, thin = thin,
+               adaptNf = rep(adaptNf, m$nr),
+               transient = transient,
+               nChains = nChains, nParallel = 1)
+Sys.time() - a
+```
+
+#Save the model object
+
+```{r, eval=F, cache=T}
+save(m, file ="individual_level/model_selection/model1_thin5_samples1000_chains2.RData")
+```
+
+#Load the model object
+```{r}
+load(file= "individual_level/model_selection/model1_thin5_samples1000_chains2.RData")
+```
+
+## Evaluating the HMSC model: chain convergence and model fit
+
+## Assessing model convergence
+
+To assess chain convergence, we can look at posterior trace plots, effective sample sizes, and potential scale reduction factors. 
+
+### Extract posterior and convert to Coda object
+
+The two model chains overlap, and there are no trends in the posterior plots indicating
+little autocorrelation among consecutive samples and correct chain mixing.
+
+```{r, ache=F, fig.height=6, fig.width=6, }
+post = convertToCodaObject(m) 
+
+plot(post$Beta[,1:8])
+```
+
+We can also save the posterior trace plots in a pdf file 
+
+```{r, cache=F}
+
+pdf("individual_level/model_selection/posterior_plots/BetaPost.pdf")
+plot(post$Beta)
+dev.off()
+
+pdf("individual_level/model_selection/posterior_plots/OmegaPost.pdf")
+plot(post$Omega[[1]])
+dev.off()
+```
+
+### Effective sample size for beta parameters
+
+Effective sample sizes are close to actual sample size (2000)
+
+```{r, eval=T, cache=T}
+summary(effectiveSize(post$Beta))
+```
+
+
+```{r, eval=T, cache=T}
+summary(effectiveSize(post$Omega[[1]]))
+
+```
+## Potential scale reduction factors for beta parameters
+
+Scale reduction factors are close to 1
+
+```{r, cache=F}
+summary(gelman.diag(post$Beta)$psrf)
+```
+
+## Evaluate model performance: Extract and assess parameter estimates
+
+Now we can extract the explanatory power of the model by computing the r^2^ (i.e.proportion of variance in the observed data that is explained by the model) with the function
+evaluateModelFit. To do that, we first need to compute the posterior distribution 
+of the predicted values with the function computePredictedValues
+
+### Compute predicted values
+
+```{r, eval=T, cache=T}
+predY = computePredictedValues(m)
+
+MF = evaluateModelFit(m, predY)
+MF
+```
+
+### Compute and plot variance partitioning
+
+HMSC also allow us to assess how the explained variance is partitioned among the different
+fixed effects (here the phenotypic traits) and random components (here the study plots) of the model.
+
+```{r, cache=F, message=F, warning=F, fig.width=10}
+head(m$X)
+group = c(1, 1, 2) #we group the intercept with plant height
+groupnames = m$covNames[-1]
+
+VP = computeVariancePartitioning(m, group = group, groupnames = groupnames, na.ignore=T)
+par(mar=c(4,4,2,12), xpd=T)
+plotVariancePartitioning(m, VP = VP, args.legend=list(x=4.5, y=1, bty="n"))
+```
+We can see that the partition of variance in relative fitness among the two traits and the plot random component is highly similar for D. sambucina and O. mascula. In contrast, in A. morio a smaller proportion of variance in relative fitness is explained by these two phenotypic traits, while the study plot explained a much higher proportion. We can also see in more detail the partition of variance for each species
+
+```{r, cache=F, message=F, warning= F}
+
+VP$vals
+```
+## Extract the Beta parameters
+
+Now we extract the Beta parameters (regression coefficients) for each model predictor and their posterior support.
+In this case the regression coefficients that describe the relationship between the phenotypic traits and relative fitness correspond to the phenotypic linear selection gradients
+```{r, eval=T, cache=T}
+mbeta = getPostEstimate(m, "Beta")
+mbeta$mean
+```
+We can also extract the posterior support for each parameter. 
+
+```{r, eval=T, cache=T}
+
+mbeta$support[2:3,]#posterior support for the phenotypic traits
+
+```
+
+## Estimate phenotypic selection gradients
+
+First we calculate the means and standard deviation for each trait on each species.
+```{r}
+height_mean = colMeans(XData$plant_height*as.matrix(traitdata[,4:6]),na.rm=T)
+flowers_mean = colMeans(XData$flowers_open*as.matrix(traitdata[,4:6]),na.rm=T)
+
+height_SD = apply(XData$plant_height*as.matrix(traitdata[,4:6]), 2, sd, na.rm=T)
+flowers_SD = apply(XData$flowers_open*as.matrix(traitdata[,4:6]), 2, sd, na.rm=T)
+```
+
+Then, we estimate the linear selection gradients on each trait for each species:
+
+We will estimate both mean and variance-scaled selection gradients. To do that, we multiply the Beta parameter (selectin gradient) for each trait by the trait mean (mean-scaled selection gradient) or by its standard deviation (variance-scaled selection gradient).
+
+While variance-scaled selection gradients indicate a proportional change in relative fitness by a unit standard deviation change on the trait, mean-scaled selection gradients indicate a proportional change in relative fitness by proportional change in the trait.
+
+```{r}
+betam_height = mbeta$mean[2,]*height_mean
+betam_flowers = mbeta$mean[3,]*flowers_mean
+betavar_height = mbeta$mean[2,]*height_SD
+betavar_flowers=mbeta$mean[3,]*flowers_SD
+
+```
+Then we create a table summarizing the results of the selection analyses
+
+```{r, echo= F}
+
+stats_table= matrix(NA, nrow= 10, ncol= 4)
+stats_table[,1]=rep(c("Mean", "SD", "Beta", "Beta_mean", "Beta_var"),2)
+stats_table[,2:4]=round(rbind(height_mean,height_SD,mbeta$mean[2,],betam_height, betavar_height, 
+                           flowers_mean, flowers_SD, mbeta$mean[3,],betam_flowers,betavar_flowers), 2)
+rownames(stats_table)=c("plant height",rep("",4),"flower number",rep("",4))
+colnames(stats_table)=c("", "A. morio", "D. sambucina", "O. mascula")
+
+kable(stats_table, caption="Mean, SD, and selection gradients for each species")
+```
+
+## Estimate fitness residual associations among species
+
+HMSC also allow us to estimate and visualize residual correlations among species after controlling for the effects of the model covariates, which in the context of reproductive fitness of coflowering species at local communities would suggest pollinator-mediated reproductive interactions among species. 
+
+#Omega matrix: fitness residual correlations among species after controlling for their phenotypic traits.
+
+```{r, cache= F}
+OmegaCor = computeAssociations(m)
+supportLevel = 0.65 #here we show correlations with at least 0.65 posterior support
+
+toPlot = ((OmegaCor[[1]]$support>supportLevel) + 
+            (OmegaCor[[1]]$support<(1-supportLevel))>0)*OmegaCor[[1]]$mean
+
+corrplot(toPlot, type="lower", tl.cex=.7,tl.col="black",tl.srt=45,method = "color", 
+         col=colorRampPalette(c("blue","white", "red"))(200), mar=c(0,0,0,1))
+```
+We can see positive residual correlations in the individual fitness of Anacamptis morio and Orchis mascula after controlling for the variation explained by their size and number of flowers, this is, individuals of A. morio and O. mascula showed higher fitness values (here higher number of fruits) when co-occurring on the same plots, which may suggest facilitative (positive sign) pollinator-mediated reproductive interactions among them.
+
+
+```{r}
+```
+
